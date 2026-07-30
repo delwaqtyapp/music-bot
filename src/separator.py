@@ -73,32 +73,46 @@ def _separate(file_path):
     out_base = str(OUTPUT_DIR / stem)
     vocals_path = f"{out_base}_vocals.mp3"
     music_path  = f"{out_base}_music.mp3"
+
+    # Step 1: Extract vocals using center channel + bandpass + noise gate
     r1 = subprocess.run([
         ffmpeg, "-i", file_path,
-        "-af", "pan=mono|c0=FC",
+        "-af", "pan=mono|c0=FC,lowpass=f=8000,highpass=f=80,afftdn=nr=12:nf=-25,volume=2.0",
         "-b:a", "192k", "-y", vocals_path
     ], capture_output=True, timeout=120)
-    r2 = subprocess.run([
-        ffmpeg, "-i", file_path,
-        "-af", "pan=stereo|FL=FL+0.5*FC|FR=FR+0.5*FC",
-        "-b:a", "192k", "-y", music_path
-    ], capture_output=True, timeout=120)
-    if r1.returncode == 0 and r2.returncode == 0 and Path(vocals_path).exists() and Path(music_path).exists():
+
+    if r1.returncode == 0 and Path(vocals_path).exists():
+        # Step 2: Generate music by subtracting vocals from original (invert phase and mix)
+        r2 = subprocess.run([
+            ffmpeg, "-i", file_path, "-i", vocals_path,
+            "-filter_complex", "[1:a]volume=-1[a_inv];[0:a][a_inv]amix=inputs=2:duration=first[music]",
+            "-map", "[music]", "-b:a", "192k", "-y", music_path
+        ], capture_output=True, timeout=120)
+
+    # Fallback: pan filter
+    if not Path(vocals_path).exists() or not Path(music_path).exists():
+        r1b = subprocess.run([
+            ffmpeg, "-i", file_path,
+            "-af", "pan=mono|c0=FC", "-b:a", "192k", "-y", vocals_path
+        ], capture_output=True, timeout=120)
+        r2b = subprocess.run([
+            ffmpeg, "-i", file_path,
+            "-af", "pan=stereo|FL=FL+0.5*FC|FR=FR+0.5*FC",
+            "-b:a", "192k", "-y", music_path
+        ], capture_output=True, timeout=120)
+
+    if Path(vocals_path).exists() and Path(music_path).exists():
         return {"vocals": vocals_path, "music": music_path}
-    vocals_path2 = f"{out_base}_vocals2.mp3"
-    music_path2  = f"{out_base}_music2.mp3"
-    r3 = subprocess.run([
-        ffmpeg, "-i", file_path,
-        "-af", "lowpass=f=4000,highpass=f=80",
-        "-b:a", "192k", "-y", vocals_path2
-    ], capture_output=True, timeout=120)
-    r4 = subprocess.run([
-        ffmpeg, "-i", file_path,
-        "-af", "highpass=f=400,lowpass=f=200",
-        "-b:a", "192k", "-y", music_path2
-    ], capture_output=True, timeout=120)
-    if r3.returncode == 0 and r4.returncode == 0 and Path(vocals_path2).exists() and Path(music_path2).exists():
-        return {"vocals": vocals_path2, "music": music_path2}
+
+    # Final fallback: highpass/lowpass
+    vocals_final = f"{out_base}_vocals_final.mp3"
+    music_final  = f"{out_base}_music_final.mp3"
+    subprocess.run([ffmpeg, "-i", file_path, "-af", "lowpass=f=4000,highpass=f=80",
+                    "-b:a", "192k", "-y", vocals_final], capture_output=True, timeout=120)
+    subprocess.run([ffmpeg, "-i", file_path, "-af", "highpass=f=400,lowpass=f=200",
+                    "-b:a", "192k", "-y", music_final], capture_output=True, timeout=120)
+    if Path(vocals_final).exists() and Path(music_final).exists():
+        return {"vocals": vocals_final, "music": music_final}
     return None
 
 def _separate_video(file_path):

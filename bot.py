@@ -167,7 +167,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for url in urls:
         platform = detect_platform(url)
-        icon = PLATFORM_ICONS.get(platform, "🔗")
+        icon = PLATFORM_ICONS.get(platform.lower(), "🔗")
+        is_video_platform = any(p in platform.lower() for p in ['youtube', 'facebook', 'instagram', 'tiktok', 'snapchat', 'twitter', 'vimeo', 'dailymotion', 'twitch', 'linkedin'])
 
         msg = await update.message.reply_text(
             f"{icon} تم اكتشاف: **{platform}**\n"
@@ -181,18 +182,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.edit_text(f"❌ فشل تحميل الرابط: {url[:50]}")
                 continue
 
-            file_path = info["file_path"]
             title = info["title"]
             duration = info.get("duration", "?")
             size = info.get("size", 0)
 
-            ext = Path(file_path).suffix.lower()
+            ext = Path(info["file_path"]).suffix.lower()
             VIDEO_EXTS = {'.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'}
             AUDIO_EXTS = {'.mp3', '.m4a', '.wav', '.flac', '.ogg', '.aac', '.opus'}
             is_video = ext in VIDEO_EXTS
 
             keyboard = []
-            if is_video:
+            if is_video_platform:
+                # Always show ALL options for video platforms
                 keyboard = [
                     [InlineKeyboardButton("🎬 الفيديو الأصلي", callback_data=f"file|{url}"),
                      InlineKeyboardButton("🎤 فيديو + صوت فقط", callback_data=f"video_vocals|{url}")],
@@ -200,6 +201,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      InlineKeyboardButton("🎤 صوت بدون موسيقى", callback_data=f"audio_vocals|{url}")],
                     [InlineKeyboardButton("🎵 موسيقى فقط", callback_data=f"audio_music|{url}"),
                      InlineKeyboardButton("🎬 اختيار الجودة", callback_data=f"video|{url}")],
+                ]
+            elif is_video:
+                keyboard = [
+                    [InlineKeyboardButton("🎬 الفيديو الأصلي", callback_data=f"file|{url}"),
+                     InlineKeyboardButton("🎤 فيديو + صوت فقط", callback_data=f"video_vocals|{url}")],
+                    [InlineKeyboardButton("🎵 الصوت الأصلي", callback_data=f"audio|{url}"),
+                     InlineKeyboardButton("🎤 صوت بدون موسيقى", callback_data=f"audio_vocals|{url}")],
+                    [InlineKeyboardButton("🎵 موسيقى فقط", callback_data=f"audio_music|{url}")],
                 ]
             else:
                 keyboard = [
@@ -219,7 +228,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
 
-            # Store info for callback
             if 'downloads' not in context.user_data:
                 context.user_data['downloads'] = {}
             context.user_data['downloads'][url] = info
@@ -265,6 +273,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "file":
         await query.edit_message_text("📥 جاري التحميل...")
+        ext = Path(info["file_path"]).suffix.lower()
+        VIDEO_EXTS = {'.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'}
+        AUDIO_EXTS = {'.mp3', '.m4a', '.wav', '.flac', '.ogg', '.aac', '.opus'}
+        # Re-download as video if initial was audio but video platform
+        is_video_platform = any(p in url.lower() for p in ['youtube', 'facebook', 'instagram', 'tiktok', 'snapchat', 'twitter', 'vimeo'])
+        if ext in AUDIO_EXTS and is_video_platform:
+            new_info = await download_media(url, query.from_user.id, "bestvideo[height<=1080]+bestaudio/best[height<=1080]")
+            if new_info:
+                await _send_file(query, new_info)
+                return
         await _send_file(query, info)
 
     elif action == "video":
