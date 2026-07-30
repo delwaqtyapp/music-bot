@@ -136,6 +136,86 @@ async def cookies_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "→ Export → ارفع الملف هنا"
     )
 
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle audio/video file uploads from user"""
+    user_id = update.effective_user.id
+    msg = update.message
+    file_id = None
+    file_name = "media"
+    is_video = False
+
+    if msg.video:
+        file_id = msg.video.file_id
+        file_name = msg.video.file_name or f"video_{msg.video.file_id[:8]}.mp4"
+        is_video = True
+    elif msg.audio:
+        file_id = msg.audio.file_id
+        file_name = msg.audio.file_name or f"audio_{msg.audio.file_id[:8]}.mp3"
+        is_video = False
+    elif msg.voice:
+        file_id = msg.voice.file_id
+        file_name = f"voice_{msg.voice.file_id[:8]}.ogg"
+        is_video = False
+    elif msg.document:
+        ext = Path(msg.document.file_name or "").suffix.lower()
+        if ext in {'.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'}:
+            file_id = msg.document.file_id
+            file_name = msg.document.file_name
+            is_video = True
+        elif ext in {'.mp3', '.m4a', '.wav', '.flac', '.ogg', '.aac', '.opus', '.wma'}:
+            file_id = msg.document.file_id
+            file_name = msg.document.file_name
+            is_video = False
+        else:
+            return
+
+    if not file_id:
+        return
+
+    reply = await msg.reply_text("📥 جاري تحميل الملف...")
+    tg_file = await msg.effective_attachment[-1].get_file()
+
+    # Save to downloads dir
+    file_path = DOWNLOAD_DIR / file_name
+    await tg_file.download_to_drive(file_path)
+
+    size_mb = file_path.stat().st_size / (1024*1024)
+    info = {
+        "file_path": str(file_path),
+        "title": Path(file_name).stem,
+        "duration": "?",
+        "size": size_mb,
+    }
+
+    url_key = f"file_{file_id[:16]}"
+    if 'downloads' not in context.user_data:
+        context.user_data['downloads'] = {}
+    context.user_data['downloads'][url_key] = info
+
+    icon = "🎬" if is_video else "🎵"
+    keyboard = []
+    if is_video:
+        keyboard = [
+            [InlineKeyboardButton("🎬 الفيديو الأصلي", callback_data=f"file|{url_key}"),
+             InlineKeyboardButton("🎤 فيديو + صوت فقط", callback_data=f"video_vocals|{url_key}")],
+            [InlineKeyboardButton("🎵 الصوت الأصلي", callback_data=f"audio|{url_key}"),
+             InlineKeyboardButton("🎤 صوت بدون موسيقى", callback_data=f"audio_vocals|{url_key}")],
+            [InlineKeyboardButton("🎵 موسيقى فقط", callback_data=f"audio_music|{url_key}")],
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("🎤 صوت بدون موسيقى", callback_data=f"audio_vocals|{url_key}"),
+             InlineKeyboardButton("🎵 موسيقى فقط", callback_data=f"audio_music|{url_key}")],
+            [InlineKeyboardButton("🎵 الصوت الأصلي", callback_data=f"file|{url_key}")],
+        ]
+    keyboard.append([InlineKeyboardButton("ℹ️ معلومات", callback_data=f"info|{url_key}")])
+
+    await reply.edit_text(
+        f"{icon} تم استلام الملف\n"
+        f"📁 {file_name}\n💾 {size_mb:.1f}MB\n\nاختر ما تريد:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc or not doc.file_name or not doc.file_name.endswith('.txt'):
@@ -455,6 +535,7 @@ def main():
     app.add_handler(CommandHandler("cookies", cookies_cmd))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.AUDIO | filters.VOICE, handle_media))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
