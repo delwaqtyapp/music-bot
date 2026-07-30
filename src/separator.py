@@ -46,30 +46,39 @@ def _run(cmd, timeout=120):
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=timeout)
         if r.returncode != 0:
-            logger.debug(f"FFmpeg error: {r.stderr.decode(errors='ignore')[-200:]}")
+            logger.warning(f"FFmpeg fail: {r.stderr.decode(errors='ignore')[-300:]}")
         return r.returncode == 0
     except subprocess.TimeoutExpired:
-        logger.warning(f"FFmpeg timed out: {' '.join(cmd[-4:])}")
+        logger.warning(f"FFmpeg timed out ({timeout}s): {' '.join(str(x) for x in cmd[-6:])}")
         return False
     except Exception as e:
         logger.error(f"FFmpeg exec error: {e}")
         return False
 
-def _audio_channels(file_path):
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
+def _probe_channels(file_path):
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
         return 2
     r = subprocess.run([
-        ffprobe, "-v", "error",
-        "-select_streams", "a:0",
-        "-show_entries", "stream=channels",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        file_path
+        ffmpeg, "-i", file_path,
+        "-af", "channelsplit=channel_layout=stereo",
+        "-t", "0.1", "-f", "null", "-"
     ], capture_output=True, timeout=30)
-    try:
-        return int(r.stdout.decode(errors='ignore').strip())
-    except (ValueError, TypeError):
-        return 2
+    stderr = r.stderr.decode(errors='ignore')
+    if "ChannelSplit" in stderr and "input.channels" not in stderr:
+        r2 = subprocess.run([
+            ffmpeg, "-i", file_path,
+            "-af", "channelsplit=channel_layout=mono",
+            "-t", "0.1", "-f", "null", "-"
+        ], capture_output=True, timeout=30)
+        if "ChannelSplit" in r2.stderr.decode(errors='ignore'):
+            return 1
+    for line in stderr.split('\n'):
+        if "Audio:" in line and "stereo" in line:
+            return 2
+        if "Audio:" in line and "mono" in line:
+            return 1
+    return 2
 
 async def separate_audio(file_path):
     try:
@@ -101,24 +110,24 @@ def _separate(file_path):
     vocals_path = f"{out_base}_vocals.mp3"
     music_path = f"{out_base}_music.mp3"
 
-    is_mono = _audio_channels(file_path) == 1
+    # ── Approach A: Stereo center channel ──
+    v_ok = _run([
+        ffmpeg, "-i", file_path,
+        "-af", "pan=mono|c0=0.5*FL+0.5*FR,lowpass=f=8000,highpass=f=85,volume=2.5",
+        "-b:a", "192k", "-y", vocals_path
+    ])
+    v_ok = v_ok and Path(vocals_path).exists() and Path(vocals_path).stat().st_size > 2048
 
-    # Strategy 1: Center channel extraction
-    if is_mono:
-        r1 = _run([
+    # ── Approach B: Mono bandpass (if stereo failed) ──
+    if not v_ok:
+        v_ok = _run([
             ffmpeg, "-i", file_path,
             "-af", "lowpass=f=8000,highpass=f=85,volume=2.0",
             "-b:a", "192k", "-y", vocals_path
         ])
-    else:
-        r1 = _run([
-            ffmpeg, "-i", file_path,
-            "-af", "pan=mono|c0=0.5*FL+0.5*FR,lowpass=f=8000,highpass=f=85,volume=2.5",
-            "-b:a", "192k", "-y", vocals_path
-        ])
-    v_ok = r1 and Path(vocals_path).exists() and Path(vocals_path).stat().st_size > 2048
+        v_ok = v_ok and Path(vocals_path).exists() and Path(vocals_path).stat().st_size > 2048
 
-    # Strategy 2: Phase inversion for music
+    # ── If vocals OK, try phase-inversion for music ──
     m_ok = False
     if v_ok:
         m_ok = _run([
@@ -134,26 +143,18 @@ def _separate(file_path):
             logger.info("Separation: center+phase-invert")
             return {"vocals": vocals_path, "music": music_path}
 
-    # Fallback: frequency-split
-    if not v_ok:
-        if is_mono:
-            v_ok = _run([
-                ffmpeg, "-i", file_path,
-                "-af", "lowpass=f=8000,highpass=f=85,volume=2.0",
-                "-b:a", "192k", "-y", vocals_path
-            ])
-        else:
-            v_ok = _run([
-                ffmpeg, "-i", file_path,
-                "-af", "pan=mono|c0=0.5*FL+0.5*FR,volume=2.0",
-                "-b:a", "192k", "-y", vocals_path
-            ])
-        v_ok = v_ok and Path(vocals_path).exists() and Path(vocals_path).stat().st_size > 2048
-
+    # ── Fallback: side-channel for music ──
     if not m_ok:
         m_ok = _run([
             ffmpeg, "-i", file_path,
             "-af", "pan=stereo|FL=FL-FR|FR=FR-FL,volume=0.7",
+            "-b:a", "192k", "-y", music_path
+        ])
+        m_ok = m_ok and Path(music_path).exists() and Path(music_path).stat().st_size > 2048
+    if not m_ok:
+        m_ok = _run([
+            ffmpeg, "-i", file_path,
+            "-af", "highpass=f=200,lowpass=f=8000,volume=0.5",
             "-b:a", "192k", "-y", music_path
         ])
         m_ok = m_ok and Path(music_path).exists() and Path(music_path).stat().st_size > 2048
@@ -162,20 +163,19 @@ def _separate(file_path):
         logger.info("Separation: frequency-split")
         return {"vocals": vocals_path, "music": music_path}
 
-    # Final fallback: basic highpass/lowpass
+    # ── Final: copy original as vocals if all else failed ──
     if not v_ok:
-        _run([ffmpeg, "-i", file_path, "-af", "lowpass=f=4000,highpass=f=85,volume=1.5",
-              "-b:a", "192k", "-y", vocals_path])
-    if not m_ok:
-        _run([ffmpeg, "-i", file_path, "-af", "highpass=f=200,lowpass=f=8000,volume=0.5",
-              "-b:a", "192k", "-y", music_path])
-
-    if Path(vocals_path).exists() and Path(vocals_path).stat().st_size > 2048 and \
-       Path(music_path).exists() and Path(music_path).stat().st_size > 2048:
-        return {"vocals": vocals_path, "music": music_path}
-
+        if Path(vocals_path).exists():
+            try: Path(vocals_path).unlink()
+            except: pass
+        _run([
+            ffmpeg, "-i", file_path,
+            "-b:a", "192k", "-y", vocals_path
+        ])
     if Path(vocals_path).exists() and Path(vocals_path).stat().st_size > 2048:
-        logger.warning("Music fallback failed, returning vocals only")
+        logger.warning("All separation failed, returning original as vocals")
+        if Path(music_path).exists() and Path(music_path).stat().st_size > 2048:
+            return {"vocals": vocals_path, "music": music_path}
         return {"vocals": vocals_path, "music": vocals_path}
 
     return None
