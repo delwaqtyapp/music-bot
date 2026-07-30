@@ -49,8 +49,11 @@ async def download_media(url):
         logger.error(f"Download failed: {e}")
         return None
 
+EXTRACTOR_ARGS = "--extractor-args youtube:player_client=android --extractor-args youtube:skip=webpage"
+
 def _download(url):
     output = str(DOWNLOAD_DIR / "%(title)s.%(ext)s")
+    ea = EXTRACTOR_ARGS.split()
 
     # Try best audio first
     cmd = [
@@ -65,7 +68,7 @@ def _download(url):
         "-x", "--audio-format", "mp3",
         "--audio-quality", "0",
         "--max-filesize", "500M",
-    ]
+    ] + ea
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
     if result.returncode != 0:
@@ -81,7 +84,7 @@ def _download(url):
             "--no-warnings",
             "-f", "best",
             "--max-filesize", "500M",
-        ]
+        ] + ea
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode != 0:
@@ -93,7 +96,7 @@ def _download(url):
                 "--print", "after_move:filename",
                 "--no-warnings",
                 "--max-filesize", "500M",
-            ]
+            ] + ea
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
     if result.returncode != 0:
