@@ -42,6 +42,10 @@ PLATFORMS = [
     (r'dailymotion\.com|dai\.ly', 'Dailymotion'),
     (r'twitch\.tv', 'Twitch'),
     (r'linkedin\.com', 'LinkedIn'),
+    (r'linkedin\.com/posts/', 'LinkedIn Post'),
+    (r'linkedin\.com/feed/update/', 'LinkedIn Feed'),
+    (r'linkedin\.com/learning/', 'LinkedIn Learning'),
+    (r'linkedin\.com/events/', 'LinkedIn Event'),
     (r'mediafire\.com|mega\.nz|drive\.google|dropbox\.com', 'Cloud Storage'),
     (r'telegram\.org|t\.me', 'Telegram'),
     (r'whatsapp\.com', 'WhatsApp'),
@@ -96,12 +100,10 @@ def _run_ytdlp(url, out_tmpl):
     return None
 
 def _run_gallerydl(url, out_dir):
-    """Use gallery-dl for better Snapchat support"""
-    out_tmpl = str(out_dir / "{id}.{extension}")
+    """Use gallery-dl for image/social media content"""
     args = [
         "gallery-dl", url,
         "-d", str(out_dir),
-        "-o", f"filename={out_tmpl}",
         "--no-cookies",
     ]
     try:
@@ -110,8 +112,7 @@ def _run_gallerydl(url, out_dir):
             files = list(out_dir.iterdir())
             if files:
                 latest = max(files, key=lambda f: f.stat().st_mtime)
-                title = latest.stem
-                return [str(latest), title, "?", str(latest.stat().st_size / (1024*1024))]
+                return [str(latest), latest.stem, "?", str(latest.stat().st_size / (1024*1024))]
             stderr = result.stderr[:500]
             logger.info(f"gallery-dl stderr: {stderr}")
         else:
@@ -135,11 +136,10 @@ def _download(url):
     out_tmpl = str(DOWNLOAD_DIR / "%(title)s_%(id)s.%(ext)s")
     lines = _run_ytdlp(url, out_tmpl)
     if not lines:
-        if 'snapchat' in url.lower():
-            logger.info("yt-dlp failed, trying gallery-dl for Snapchat...")
-            snap_dir = DOWNLOAD_DIR / "snapchat"
-            snap_dir.mkdir(exist_ok=True)
-            lines = _run_gallerydl(url, snap_dir)
+        logger.info("yt-dlp failed, trying gallery-dl as fallback...")
+        fallback_dir = DOWNLOAD_DIR / "gallery"
+        fallback_dir.mkdir(exist_ok=True)
+        lines = _run_gallerydl(url, fallback_dir)
     if not lines:
         stderr = "(no output)"
         logger.error(f"All download methods failed for {url}")

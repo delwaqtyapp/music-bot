@@ -29,6 +29,8 @@ PLATFORM_ICONS = {
     "twitter": "🐦", "spotify": "🎧",
     "soundcloud": "🎶", "vimeo": "🎬", "dailymotion": "📺", "twitch": "🎮",
     "reddit": "🤖", "pinterest": "📌", "telegram": "✈️", "whatsapp": "💬",
+    "linkedin": "💼", "linkedin post": "💼", "linkedin feed": "💼",
+    "linkedin learning": "📚", "linkedin event": "📅",
 }
 
 def extract_urls(text):
