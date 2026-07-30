@@ -458,17 +458,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == "video_vocals":
             user_id = query.from_user.id
             await query.edit_message_text("🎤 جاري تحميل الفيديو وفصل الصوت...")
-            video_info = await download_media(url, user_id)
+            video_info = await download_media(url, user_id, "bestvideo[height<=1080]+bestaudio/best[height<=1080]")
             if not video_info:
                 video_info = info
+            fp = video_info["file_path"]
+            ext = Path(fp).suffix.lower()
+            VIDEO_EXTS = {'.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'}
+            if ext not in VIDEO_EXTS:
+                await query.edit_message_text("❌ الرابط لا يحتوي على فيديو، جرب خيار الصوت")
+                return
             await query.edit_message_text("🎤 جاري فصل الصوت واستبداله في الفيديو... ⏳")
-            result_path = await separate_video(video_info["file_path"])
+            result_path = await separate_video(fp)
             if result_path:
                 await query.edit_message_text("✅ تم! جاري الإرسال...")
                 with open(result_path, 'rb') as f:
                     await query.message.reply_video(f, caption="🎤 فيديو + صوت فقط (بدون موسيقى)")
                 await query.delete_message()
-                for p in [video_info["file_path"], result_path]:
+                for p in [fp, result_path]:
                     try: Path(p).unlink(missing_ok=True)
                     except: pass
             else:

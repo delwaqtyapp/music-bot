@@ -180,10 +180,24 @@ def _separate(file_path):
 
     return None
 
+def _has_video_stream(file_path):
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return True
+    r = subprocess.run([
+        ffmpeg, "-i", file_path,
+        "-c", "copy", "-map", "0:v:0",
+        "-f", "null", "-"
+    ], capture_output=True, timeout=30)
+    return r.returncode == 0
+
 def _separate_video(file_path):
     ffmpeg = get_ffmpeg_path()
     sep = _separate(file_path)
     if not sep:
+        return None
+    if not _has_video_stream(file_path):
+        logger.error("Input file has no video stream")
         return None
     stem = Path(file_path).stem
     output_path = str(OUTPUT_DIR / f"{stem}_vocals_only.mp4")
