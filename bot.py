@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-from src.downloader import download_media, detect_platform
+from src.downloader import download_media, detect_platform, save_cookies, get_cookies_path
 from src.separator import separate_audio
 
 load_dotenv()
@@ -33,22 +33,32 @@ PLATFORM_ICONS = {
     "linkedin learning": "📚", "linkedin event": "📅",
 }
 
+COOKIES_DIR = Path("cookies")
+COOKIES_DIR.mkdir(exist_ok=True)
+
 def extract_urls(text):
     return re.findall(r'https?://[^\s]+', text)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    keyboard = [[InlineKeyboardButton("📋 طريقة الاستخدام", callback_data="howto")]]
+    has_cookies = get_cookies_path(user.id) is not None
+    keyboard = [
+        [InlineKeyboardButton("📋 طريقة الاستخدام", callback_data="howto")],
+    ]
+    if not has_cookies:
+        keyboard.append([InlineKeyboardButton("🍪 رفع Cookies", callback_data="cookie_help")])
     await update.message.reply_text(
         f"مرحبا {user.first_name} 🤗\n\n"
         f"أرسل لي رابط أي فيديو أو أغنية وهختارلك أنسب حاجة:\n\n"
         f"🎵 **أغنية** → افصل الموسيقى عن الصوت\n"
         f"🎬 **فيديو** → حمل الصوت أو الفيديو\n"
-        f"📁 **رابط مباشر** → حمل الملف\n\n"
+        f"📁 **رابط مباشر** → حمل الملف\n"
+        f"🍪 **cookies** → عشان الاستوريهات\n\n"
         f"المنصات المدعومة:\n"
         f"▶️ YouTube • 📘 Facebook • 📸 Instagram\n"
         f"🎵 TikTok • 👻 Snapchat • 🐦 Twitter\n"
-        f"🎧 Spotify • 🎶 SoundCloud • وغيرها ١٠٠٠+\n\n"
+        f"🎧 Spotify • 🎶 SoundCloud • 💼 LinkedIn\n"
+        f"وغيرها ١٠٠٠+\n\n"
         f"أرسل الرابط الآن 👇",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -63,13 +73,35 @@ async def howto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3. يظهرلك خيارات: تحميل - فصل صوت - معلومات\n"
         "4. استلم النتيجة\n\n"
         "تقدر ترسل أكثر من رابط في نفس الرسالة!\n\n"
+        "🍪 **للاستوريهات:**\n"
+        "ارسلي /cookies وارفع ملف cookies.txt\n"
+        "هتشتغل استوريهات فيسبوك، انستا، سناب\n\n"
         "مثال:\n"
         "https://youtu.be/xxx\n"
         "https://tiktok.com/xxx\n\n"
         "✅ يدعم YouTube Music • Spotify • SoundCloud\n"
         "✅ يدعم Facebook • Instagram • TikTok • Twitter\n"
         "✅ يدعم Snapchat • Reddit • Vimeo • Twitch\n"
-        "✅ يدعم أي رابط تحميل مباشر",
+        "✅ يدعم LinkedIn • أي رابط تحميل مباشر",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 رجوع", callback_data="back_start")
+        ]])
+    )
+
+async def cookie_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🍪 **طريقة رفع Cookies**\n\n"
+        "عشان تحمل استوريهات وبوستات خاصة، محتاج ترفع ملف cookies:\n\n"
+        "1. ثبت إضافة متصفح:\n"
+        "   • Chrome: 'Get cookies.txt' (من المتجر)\n"
+        "   • Firefox: 'cookies.txt' (من الإضافات)\n\n"
+        "2. افتح فيسبوك/انستا/سناب وسجل دخول\n\n"
+        "3. استخدم الإضافة → Export cookies → هينزل ملف cookies.txt\n\n"
+        "4. أرسل الملف للبوت بعد /cookies\n\n"
+        "⚠️ ملف cookies ده سري جدًا!\n"
+        "خلي بالك متشاركوش مع حد",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🔙 رجوع", callback_data="back_start")
         ]])
@@ -79,16 +111,51 @@ async def back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user = query.from_user
-    keyboard = [[InlineKeyboardButton("📋 طريقة الاستخدام", callback_data="howto")]]
+    has_cookies = get_cookies_path(user.id) is not None
+    keyboard = [
+        [InlineKeyboardButton("📋 طريقة الاستخدام", callback_data="howto")],
+    ]
+    if not has_cookies:
+        keyboard.append([InlineKeyboardButton("🍪 رفع Cookies", callback_data="cookie_help")])
     await query.edit_message_text(
         f"مرحبا {user.first_name} 🤗\n\n"
         f"أرسل لي رابط أي فيديو أو أغنية وهختارلك أنسب حاجة:\n\n"
         f"🎵 **أغنية** → افصل الموسيقى عن الصوت\n"
         f"🎬 **فيديو** → حمل الصوت أو الفيديو\n"
-        f"📁 **رابط مباشر** → حمل الملف\n\n"
+        f"📁 **رابط مباشر** → حمل الملف\n"
+        f"🍪 **cookies** → عشان الاستوريهات\n\n"
         f"أرسل الرابط الآن 👇",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+async def cookies_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🍪 أرسل ملف **cookies.txt** دلوقتي\n\n"
+        "افتح فيسبوك/انستا/سناب في المتصفح وسجل دخول\n"
+        "استخدم إضافة 'Get cookies.txt'\n"
+        "→ Export → ارفع الملف هنا"
+    )
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    if not doc or not doc.file_name or not doc.file_name.endswith('.txt'):
+        return
+    user_id = update.effective_user.id
+    content = await doc.get_file()
+    cookies_path = COOKIES_DIR / f"{user_id}.txt"
+    await content.download_to_drive(cookies_path)
+    if save_cookies(user_id, str(cookies_path)):
+        await update.message.reply_text(
+            "✅ تم حفظ الـ cookies بنجاح!\n\n"
+            "دلوقتي تقدر تحمل:\n"
+            "📘 استوريهات فيسبوك\n"
+            "📸 استوريهات انستا\n"
+            "👻 استوريهات سناب شات\n"
+            "💼 بوستات LinkedIn\n\n"
+            "أرسل الرابط وجرب!"
+        )
+    else:
+        await update.message.reply_text("❌ فشل في حفظ الـ cookies، تأكد من صحة الملف")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -109,7 +176,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         try:
-            info = await download_media(url)
+            info = await download_media(url, update.effective_user.id)
             if not info:
                 await msg.edit_text(f"❌ فشل تحميل الرابط: {url[:50]}")
                 continue
@@ -168,6 +235,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if query.data == "back_start":
         await back_start(update, context)
+        return
+    if query.data == "cookie_help":
+        await cookie_help(update, context)
         return
 
     action, url = query.data.split("|", 1)
@@ -245,7 +315,9 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CommandHandler("cookies", cookies_cmd))
     app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
