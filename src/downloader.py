@@ -107,9 +107,12 @@ def _run_ytdlp(url, out_tmpl, cookies=None):
                 logger.debug(f"yt-dlp stderr: {result.stderr[:300]}")
             if result.returncode == 0:
                 lines = [l.strip() for l in result.stdout.split('\n') if l.strip()]
-                if lines and Path(lines[0]).exists():
-                    logger.info(f"yt-dlp success: {lines[0]}")
-                    return lines
+                if lines:
+                    lines = lines[-4:]
+                    file_path = lines[-1] if len(lines) >= 4 else lines[0]
+                    if Path(file_path).exists():
+                        logger.info(f"yt-dlp success: {file_path}")
+                        return lines
         except subprocess.TimeoutExpired:
             logger.warning("yt-dlp timeout")
         except Exception as e:
@@ -152,16 +155,20 @@ def _download(url, user_id=None):
         fallback_dir = DOWNLOAD_DIR / "gallery"
         fallback_dir.mkdir(exist_ok=True)
         lines = _run_gallerydl(url, fallback_dir)
-    if not lines:
-        logger.error(f"All methods failed for {url}")
-        return None
-    file_path = lines[0]
+    return _parse_result(lines) if lines else None
+
+def _parse_result(lines):
+    if len(lines) >= 4:
+        title, duration, size_str, file_path = lines[0], lines[1], lines[2], lines[3]
+    else:
+        file_path = lines[0]
+        title = Path(file_path).stem
+        duration = "?"
+        size_str = "0"
     if not Path(file_path).exists():
         logger.error(f"File not found: {file_path}")
         return None
-    title = sanitize_filename(lines[1]) if len(lines) > 1 else Path(file_path).stem
-    duration = lines[2] if len(lines) > 2 else "?"
-    size_str = lines[3] if len(lines) > 3 else "0"
+    title = sanitize_filename(title)
     try:
         size = float(size_str) if re.match(r'^[\d.]+$', size_str) else Path(file_path).stat().st_size / (1024*1024)
     except:
