@@ -13,10 +13,27 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 PLATFORMS = [
     (r'youtube\.com|youtu\.be|music\.youtube', 'YouTube'),
+    (r'youtube\.com/shorts/', 'YouTube Shorts'),
     (r'facebook\.com|fb\.watch|fb\.com', 'Facebook'),
+    (r'facebook\.com/reel/', 'Facebook Reels'),
+    (r'facebook\.com/stories/', 'Facebook Stories'),
     (r'instagram\.com|instagr\.am', 'Instagram'),
+    (r'instagram\.com/reel/', 'Instagram Reels'),
+    (r'instagram\.com/stories/', 'Instagram Stories'),
+    (r'instagram\.com/p/', 'Instagram Post'),
     (r'tiktok\.com', 'TikTok'),
+    (r'tiktok\.com/@.*/video/', 'TikTok Video'),
+    (r'tiktok\.com/@.*/photo/', 'TikTok Photo'),
+    (r'snapchat\.com/spotlight/', 'Snapchat Spotlight'),
+    (r'snapchat\.com/story/', 'Snapchat Story'),
+    (r'snapchat\.com/p/', 'Snapchat Profile'),
+    (r'snapchat\.com/add/', 'Snapchat Add'),
+    (r'snapchat\.com/lens/', 'Snapchat Lens'),
+    (r'snapchat\.com/discover/', 'Snapchat Discover'),
+    (r'snapchat\.com/t/', 'Snapchat Link'),
     (r'snapchat\.com', 'Snapchat'),
+    (r'story\.snapchat\.com', 'Snapchat Story'),
+    (r't\.snapchat\.com', 'Snapchat Link'),
     (r'twitter\.com|x\.com', 'X (Twitter)'),
     (r'spotify\.com', 'Spotify'),
     (r'soundcloud\.com', 'SoundCloud'),
@@ -122,4 +139,7 @@ def _download(url):
     stderr = result.stderr[:500] if result and hasattr(result, 'stderr') else "Unknown error"
     if result:
         logger.error(f"yt-dlp failed: {stderr}")
+    # Better error for Snapchat non-spotlight
+    if 'snapchat' in url and 'spotlight' not in url:
+        logger.warning("Snapchat non-spotlight URLs need authentication - try a Spotlight link instead")
     return None

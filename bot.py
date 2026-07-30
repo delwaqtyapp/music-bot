@@ -19,8 +19,14 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
 
 PLATFORM_ICONS = {
-    "youtube": "▶️", "youtube music": "🎵", "facebook": "📘", "instagram": "📸",
-    "tiktok": "🎵", "snapchat": "👻", "twitter": "🐦", "spotify": "🎧",
+    "youtube": "▶️", "youtube music": "🎵", "youtube shorts": "▶️",
+    "facebook": "📘", "facebook reels": "📘", "facebook stories": "📘",
+    "instagram": "📸", "instagram reels": "📸", "instagram stories": "📸", "instagram post": "📸",
+    "tiktok": "🎵", "tiktok video": "🎵", "tiktok photo": "📸",
+    "snapchat": "👻", "snapchat spotlight": "👻", "snapchat story": "👻",
+    "snapchat profile": "👻", "snapchat add": "👻", "snapchat lens": "👻",
+    "snapchat discover": "👻", "snapchat link": "👻",
+    "twitter": "🐦", "spotify": "🎧",
     "soundcloud": "🎶", "vimeo": "🎬", "dailymotion": "📺", "twitch": "🎮",
     "reddit": "🤖", "pinterest": "📌", "telegram": "✈️", "whatsapp": "💬",
 }
