@@ -11,6 +11,13 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 COOKIES_DIR = Path("cookies")
 COOKIES_DIR.mkdir(exist_ok=True)
 
+# Try to get ffmpeg location for yt-dlp
+try:
+    from src.separator import get_ffmpeg_location
+    _FFMPEG_LOC = get_ffmpeg_location()
+except:
+    _FFMPEG_LOC = ""
+
 PLATFORMS = [
     (r'youtube\.com/shorts/', 'YouTube Shorts'),
     (r'youtube\.com|youtu\.be|music\.youtube\.com', 'YouTube'),
@@ -91,6 +98,8 @@ def _run_ytdlp(url, out_tmpl, cookies=None, format_id=None):
     ]
     if cookies:
         base.extend(["--cookies", cookies])
+    if _FFMPEG_LOC:
+        base.extend(["--ffmpeg-location", _FFMPEG_LOC])
     yt_extractor = "youtube:player_client=android,youtube_web"
     strategies = []
     if format_id:
@@ -100,6 +109,7 @@ def _run_ytdlp(url, out_tmpl, cookies=None, format_id=None):
             [*base, "--extractor-args", yt_extractor, "-x", "--audio-format", "mp3", "--audio-quality", "0"],
             [*base, "--extractor-args", yt_extractor, "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]"],
             [*base, "--extractor-args", yt_extractor, "-f", "bestvideo+bestaudio/best"],
+            [*base, "-x", "--audio-format", "mp3", "--audio-quality", "0"],
             [*base, "-f", "best"],
             base,
         ]

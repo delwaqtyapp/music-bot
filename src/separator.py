@@ -3,39 +3,21 @@ import asyncio
 import subprocess
 import logging
 import shutil
-import requests
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-FFMPEG_URLS = {
-    "linux": "https://github.com/eugenesvk/ffmpeg-static/releases/latest/download/ffmpeg-linux64",
-    "win32": "https://github.com/eugenesvk/ffmpeg-static/releases/latest/download/ffmpeg-win64.exe",
-    "darwin": "https://github.com/eugenesvk/ffmpeg-static/releases/latest/download/ffmpeg-darwin64",
-}
+def get_ffmpeg_location():
+    """Return dir containing ffmpeg for yt-dlp --ffmpeg-location"""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        return os.path.dirname(ffmpeg)
+    return ""
 
-def _get_ffmpeg():
-    if shutil.which("ffmpeg"):
-        return "ffmpeg"
-    local = Path("ffmpeg")
-    if local.exists():
-        return str(local.absolute())
-    platform = os.sys.platform
-    url = FFMPEG_URLS.get(platform)
-    if not url:
-        return None
-    try:
-        r = requests.get(url, timeout=30)
-        r.raise_for_status()
-        local.write_bytes(r.content)
-        local.chmod(0o755)
-        logger.info(f"Downloaded static ffmpeg to {local}")
-        return str(local.absolute())
-    except Exception as e:
-        logger.error(f"Failed to download ffmpeg: {e}")
-        return None
+def get_ffmpeg_path():
+    return shutil.which("ffmpeg") or "ffmpeg"
 
 async def separate_audio(file_path):
     try:
@@ -46,7 +28,6 @@ async def separate_audio(file_path):
         return None
 
 async def separate_video(file_path):
-    """Separate audio from video and return video with vocals-only"""
     try:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _separate_video, file_path)
@@ -55,9 +36,9 @@ async def separate_video(file_path):
         return None
 
 def _separate(file_path):
-    ffmpeg = _get_ffmpeg()
-    if not ffmpeg:
-        logger.error("FFmpeg not available")
+    ffmpeg = get_ffmpeg_path()
+    if not shutil.which("ffmpeg"):
+        logger.error("FFmpeg not installed")
         return None
     if not Path(file_path).exists():
         logger.error(f"File not found: {file_path}")
@@ -69,14 +50,12 @@ def _separate(file_path):
     r1 = subprocess.run([
         ffmpeg, "-i", file_path,
         "-af", "pan=mono|c0=FC",
-        "-b:a", "192k",
-        "-y", vocals_path
+        "-b:a", "192k", "-y", vocals_path
     ], capture_output=True, timeout=120)
     r2 = subprocess.run([
         ffmpeg, "-i", file_path,
         "-af", "pan=stereo|FL=FL+0.5*FC|FR=FR+0.5*FC",
-        "-b:a", "192k",
-        "-y", music_path
+        "-b:a", "192k", "-y", music_path
     ], capture_output=True, timeout=120)
     if r1.returncode == 0 and r2.returncode == 0 and Path(vocals_path).exists() and Path(music_path).exists():
         return {"vocals": vocals_path, "music": music_path}
@@ -97,10 +76,7 @@ def _separate(file_path):
     return None
 
 def _separate_video(file_path):
-    """Extract audio, separate vocals, replace video audio with vocals"""
-    ffmpeg = _get_ffmpeg()
-    if not ffmpeg:
-        return None
+    ffmpeg = get_ffmpeg_path()
     sep = _separate(file_path)
     if not sep:
         return None
