@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-from src.downloader import download_media, detect_platform, save_cookies, get_cookies_path, get_formats
+from src.downloader import download_media, detect_platform, save_cookies, get_cookies_path, get_formats, DOWNLOAD_DIR
 from src.separator import separate_audio, separate_video
 
 load_dotenv()
@@ -173,10 +173,19 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     reply = await msg.reply_text("📥 جاري تحميل الملف...")
-    tg_file = await msg.effective_attachment[-1].get_file()
+    if msg.video:
+        tg_file = await msg.video.get_file()
+    elif msg.audio:
+        tg_file = await msg.audio.get_file()
+    elif msg.voice:
+        tg_file = await msg.voice.get_file()
+    elif msg.document:
+        tg_file = await msg.document.get_file()
+    else:
+        return
 
-    # Save to downloads dir
-    file_path = DOWNLOAD_DIR / file_name
+    safe_name = Path(file_name).name
+    file_path = DOWNLOAD_DIR / safe_name
     await tg_file.download_to_drive(file_path)
 
     size_mb = file_path.stat().st_size / (1024*1024)
@@ -320,149 +329,157 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data == "howto":
-        await howto(update, context)
-        return
-    if query.data == "back_start":
-        await back_start(update, context)
-        return
-    if query.data == "cookie_help":
-        await cookie_help(update, context)
-        return
+    try:
+        if query.data == "howto":
+            await howto(update, context)
+            return
+        if query.data == "back_start":
+            await back_start(update, context)
+            return
+        if query.data == "cookie_help":
+            await cookie_help(update, context)
+            return
 
-    action, url = query.data.split("|", 1)
-    downloads = context.user_data.get('downloads', {})
-    info = downloads.get(url)
+        action, url = query.data.split("|", 1)
+        downloads = context.user_data.get('downloads', {})
+        info = downloads.get(url)
 
-    if not info:
-        await query.edit_message_text("❌ انتهت صلاحية الجلسة، أرسل الرابط تاني")
-        return
+        if not info:
+            await query.edit_message_text("❌ انتهت صلاحية الجلسة، أرسل الرابط تاني")
+            return
 
-    if action == "info":
-        await query.edit_message_text(
-            f"ℹ️ **معلومات**\n\n"
-            f"العنوان: {info['title']}\n"
-            f"⏱ المدة: {info.get('duration', '?')}\n"
-            f"💾 الحجم: {info.get('size', 0):.1f}MB\n"
-            f"📁 النوع: {Path(file_path).suffix}\n\n"
-            f"تقدر تختار حاجة من القائمة 👇",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 رجوع", callback_data="back_start")
-            ]])
-        )
+        if action == "info":
+            fp = info["file_path"]
+            await query.edit_message_text(
+                f"ℹ️ **معلومات**\n\n"
+                f"العنوان: {info['title']}\n"
+                f"⏱ المدة: {info.get('duration', '?')}\n"
+                f"💾 الحجم: {info.get('size', 0):.1f}MB\n"
+                f"📁 النوع: {Path(fp).suffix}\n\n"
+                f"تقدر تختار حاجة من القائمة 👇",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 رجوع", callback_data="back_start")
+                ]])
+            )
 
-    elif action == "file":
-        await query.edit_message_text("📥 جاري التحميل...")
-        ext = Path(info["file_path"]).suffix.lower()
-        VIDEO_EXTS = {'.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'}
-        AUDIO_EXTS = {'.mp3', '.m4a', '.wav', '.flac', '.ogg', '.aac', '.opus'}
-        # Re-download as video if initial was audio but video platform
-        is_video_platform = any(p in url.lower() for p in ['youtube', 'facebook', 'instagram', 'tiktok', 'snapchat', 'twitter', 'vimeo'])
-        if ext in AUDIO_EXTS and is_video_platform:
-            new_info = await download_media(url, query.from_user.id, "bestvideo[height<=1080]+bestaudio/best[height<=1080]")
-            if new_info:
-                await _send_file(query, new_info)
-                return
-        await _send_file(query, info)
+        elif action == "file":
+            await query.edit_message_text("📥 جاري التحميل...")
+            ext = Path(info["file_path"]).suffix.lower()
+            VIDEO_EXTS = {'.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'}
+            AUDIO_EXTS = {'.mp3', '.m4a', '.wav', '.flac', '.ogg', '.aac', '.opus'}
+            is_video_platform = any(p in url.lower() for p in ['youtube', 'facebook', 'instagram', 'tiktok', 'snapchat', 'twitter', 'vimeo'])
+            if ext in AUDIO_EXTS and is_video_platform:
+                new_info = await download_media(url, query.from_user.id, "bestvideo[height<=1080]+bestaudio/best[height<=1080]")
+                if new_info:
+                    await _send_file(query, new_info)
+                    return
+            await _send_file(query, info)
 
-    elif action == "video":
-        user_id = query.from_user.id
-        await query.edit_message_text("🎬 جاري جلب الجودات...")
-        formats = await get_formats(url, user_id)
-        if formats:
-            keyboard = []
-            row = []
-            for f in formats:
-                label = f"{f['resolution'] or f['id']} ({f['ext']})" if not f['is_audio'] else f"🎵 {f['ext']}"
-                cb = f"dload|{url}|{f['id']}"
-                if f['size']:
-                    label += f" {f['size']}"
-                row.append(InlineKeyboardButton(label, callback_data=cb))
-                if len(row) >= 2:
+        elif action == "video":
+            user_id = query.from_user.id
+            await query.edit_message_text("🎬 جاري جلب الجودات...")
+            formats = await get_formats(url, user_id)
+            if formats:
+                keyboard = []
+                row = []
+                for f in formats:
+                    label = f"{f['resolution'] or f['id']} ({f['ext']})" if not f['is_audio'] else f"🎵 {f['ext']}"
+                    cb = f"dload|{url}|{f['id']}"
+                    if f['size']:
+                        label += f" {f['size']}"
+                    row.append(InlineKeyboardButton(label, callback_data=cb))
+                    if len(row) >= 2:
+                        keyboard.append(row)
+                        row = []
+                if row:
                     keyboard.append(row)
-                    row = []
-            if row:
-                keyboard.append(row)
-            keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back|{url}")])
-            await query.edit_message_text("🎬 اختر الجودة:", reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            await query.edit_message_text("📥 جاري تحميل الفيديو...")
-            new_info = await download_media(url, user_id)
+                keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back|{url}")])
+                await query.edit_message_text("🎬 اختر الجودة:", reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                await query.edit_message_text("📥 جاري تحميل الفيديو...")
+                new_info = await download_media(url, user_id)
+                await _send_file(query, new_info or info)
+
+        elif action.startswith("dload"):
+            _, url, fmt_id = query.data.split("|", 2)
+            user_id = query.from_user.id
+            await query.edit_message_text(f"📥 جاري التحميل بالجودة {fmt_id}...")
+            new_info = await download_media(url, user_id, fmt_id)
             await _send_file(query, new_info or info)
 
-    elif action.startswith("dload"):
-        _, url, fmt_id = query.data.split("|", 2)
-        user_id = query.from_user.id
-        await query.edit_message_text(f"📥 جاري التحميل بالجودة {fmt_id}...")
-        new_info = await download_media(url, user_id, fmt_id)
-        await _send_file(query, new_info or info)
+        elif action == "back":
+            url = query.data.split("|", 1)[1]
+            await _show_file_options(query, url, context)
 
-    elif action == "back":
-        url = query.data.split("|", 1)[1]
-        await _show_file_options(query, url, context)
+        elif action == "audio":
+            user_id = query.from_user.id
+            await query.edit_message_text("🎵 جاري تحميل الصوت الأصلي...")
+            new_info = await download_media(url, user_id, "bestaudio/best")
+            await _send_file(query, new_info or info)
 
-    elif action == "audio":
-        user_id = query.from_user.id
-        await query.edit_message_text("🎵 جاري تحميل الصوت الأصلي...")
-        new_info = await download_media(url, user_id, "bestaudio/best")
-        await _send_file(query, new_info or info)
+        elif action == "audio_vocals":
+            user_id = query.from_user.id
+            await query.edit_message_text("🎤 جاري تحميل وفصل الصوت...")
+            audio_info = await download_media(url, user_id, "bestaudio/best")
+            if not audio_info:
+                audio_info = info
+            await query.edit_message_text("🎤 جاري فصل الصوت عن الموسيقى... ⏳")
+            result = await separate_audio(audio_info["file_path"])
+            if result:
+                await query.edit_message_text("✅ تم! جاري الإرسال...")
+                with open(result["vocals"], 'rb') as f:
+                    await query.message.reply_audio(f, caption="🎤 صوت بدون موسيقى")
+                await query.delete_message()
+                for p in [audio_info["file_path"], result["vocals"], result["music"]]:
+                    try: Path(p).unlink(missing_ok=True)
+                    except: pass
+            else:
+                await query.edit_message_text("❌ تعذر فصل الصوت")
 
-    elif action == "audio_vocals":
-        user_id = query.from_user.id
-        await query.edit_message_text("🎤 جاري تحميل وفصل الصوت...")
-        audio_info = await download_media(url, user_id, "bestaudio/best")
-        if not audio_info:
-            audio_info = info
-        await query.edit_message_text("🎤 جاري فصل الصوت عن الموسيقى... ⏳")
-        result = await separate_audio(audio_info["file_path"])
-        if result:
-            await query.edit_message_text("✅ تم! جاري الإرسال...")
-            with open(result["vocals"], 'rb') as f:
-                await query.message.reply_audio(f, caption="🎤 صوت بدون موسيقى")
-            await query.delete_message()
-            for p in [audio_info["file_path"], result["vocals"], result["music"]]:
-                try: Path(p).unlink(missing_ok=True)
-                except: pass
-        else:
-            await query.edit_message_text("❌ تعذر فصل الصوت")
+        elif action == "audio_music":
+            user_id = query.from_user.id
+            await query.edit_message_text("🎵 جاري تحميل وفصل الموسيقى...")
+            audio_info = await download_media(url, user_id, "bestaudio/best")
+            if not audio_info:
+                audio_info = info
+            await query.edit_message_text("🎵 جاري فصل الموسيقى عن الصوت... ⏳")
+            result = await separate_audio(audio_info["file_path"])
+            if result:
+                await query.edit_message_text("✅ تم! جاري الإرسال...")
+                with open(result["music"], 'rb') as f:
+                    await query.message.reply_audio(f, caption="🎵 موسيقى فقط")
+                await query.delete_message()
+                for p in [audio_info["file_path"], result["vocals"], result["music"]]:
+                    try: Path(p).unlink(missing_ok=True)
+                    except: pass
+            else:
+                await query.edit_message_text("❌ تعذر فصل الموسيقى")
 
-    elif action == "audio_music":
-        user_id = query.from_user.id
-        await query.edit_message_text("🎵 جاري تحميل وفصل الموسيقى...")
-        audio_info = await download_media(url, user_id, "bestaudio/best")
-        if not audio_info:
-            audio_info = info
-        await query.edit_message_text("🎵 جاري فصل الموسيقى عن الصوت... ⏳")
-        result = await separate_audio(audio_info["file_path"])
-        if result:
-            await query.edit_message_text("✅ تم! جاري الإرسال...")
-            with open(result["music"], 'rb') as f:
-                await query.message.reply_audio(f, caption="🎵 موسيقى فقط")
-            await query.delete_message()
-            for p in [audio_info["file_path"], result["vocals"], result["music"]]:
-                try: Path(p).unlink(missing_ok=True)
-                except: pass
-        else:
-            await query.edit_message_text("❌ تعذر فصل الموسيقى")
+        elif action == "video_vocals":
+            user_id = query.from_user.id
+            await query.edit_message_text("🎤 جاري تحميل الفيديو وفصل الصوت...")
+            video_info = await download_media(url, user_id)
+            if not video_info:
+                video_info = info
+            await query.edit_message_text("🎤 جاري فصل الصوت واستبداله في الفيديو... ⏳")
+            result_path = await separate_video(video_info["file_path"])
+            if result_path:
+                await query.edit_message_text("✅ تم! جاري الإرسال...")
+                with open(result_path, 'rb') as f:
+                    await query.message.reply_video(f, caption="🎤 فيديو + صوت فقط (بدون موسيقى)")
+                await query.delete_message()
+                for p in [video_info["file_path"], result_path]:
+                    try: Path(p).unlink(missing_ok=True)
+                    except: pass
+            else:
+                await query.edit_message_text("❌ تعذر فصل الصوت من الفيديو")
 
-    elif action == "video_vocals":
-        user_id = query.from_user.id
-        await query.edit_message_text("🎤 جاري تحميل الفيديو وفصل الصوت...")
-        video_info = await download_media(url, user_id)
-        if not video_info:
-            video_info = info
-        await query.edit_message_text("🎤 جاري فصل الصوت واستبداله في الفيديو... ⏳")
-        result_path = await separate_video(video_info["file_path"])
-        if result_path:
-            await query.edit_message_text("✅ تم! جاري الإرسال...")
-            with open(result_path, 'rb') as f:
-                await query.message.reply_video(f, caption="🎤 فيديو + صوت فقط (بدون موسيقى)")
-            await query.delete_message()
-            for p in [video_info["file_path"], result_path]:
-                try: Path(p).unlink(missing_ok=True)
-                except: pass
-        else:
-            await query.edit_message_text("❌ تعذر فصل الصوت من الفيديو")
+    except Exception as e:
+        logger.error(f"Button callback error: {e}")
+        try:
+            await query.edit_message_text(f"❌ حدث خطأ: {str(e)[:100]}")
+        except:
+            pass
 
 async def _send_file(query, info, action="file"):
     file_path = info["file_path"]
