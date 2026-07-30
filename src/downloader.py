@@ -77,7 +77,7 @@ def get_cookies_path(user_id):
     path = COOKIES_DIR / f"{user_id}.txt"
     return str(path) if path.exists() else None
 
-def _run_ytdlp(url, out_tmpl, cookies=None):
+def _run_ytdlp(url, out_tmpl, cookies=None, format_id=None):
     base = [
         "yt-dlp", url, "-o", out_tmpl,
         "--no-playlist", "--no-warnings",
@@ -92,13 +92,17 @@ def _run_ytdlp(url, out_tmpl, cookies=None):
     if cookies:
         base.extend(["--cookies", cookies])
     yt_extractor = "youtube:player_client=android,youtube_web"
-    strategies = [
-        [*base, "--extractor-args", yt_extractor, "-x", "--audio-format", "mp3", "--audio-quality", "0"],
-        [*base, "--extractor-args", yt_extractor, "-f", "best[height<=1080]"],
-        [*base, "--extractor-args", yt_extractor, "-f", "best"],
-        [*base, "-f", "best"],
-        base,
-    ]
+    strategies = []
+    if format_id:
+        strategies.append([*base, "--extractor-args", yt_extractor, "-f", format_id])
+    else:
+        strategies = [
+            [*base, "--extractor-args", yt_extractor, "-x", "--audio-format", "mp3", "--audio-quality", "0"],
+            [*base, "--extractor-args", yt_extractor, "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]"],
+            [*base, "--extractor-args", yt_extractor, "-f", "bestvideo+bestaudio/best"],
+            [*base, "-f", "best"],
+            base,
+        ]
     for i, strategy in enumerate(strategies):
         logger.info(f"yt-dlp strategy {i+1}/{len(strategies)}")
         try:
@@ -135,21 +139,71 @@ def _run_gallerydl(url, out_dir):
         logger.warning(f"gallery-dl error: {e}")
     return None
 
-async def download_media(url, user_id=None):
+def get_formats(url, user_id=None):
+    """Get available formats for a URL"""
+    cookies = get_cookies_path(user_id) if user_id else None
+    cmd = [
+        "yt-dlp", "-F", url,
+        "--no-playlist", "--no-warnings",
+        "--no-check-certificate", "--geo-bypass",
+        "--extractor-args", "youtube:player_client=android,youtube_web",
+    ]
+    if cookies:
+        cmd.extend(["--cookies", cookies])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return None
+        formats = []
+        lines = result.stdout.split('\n')
+        in_table = False
+        for line in lines:
+            if '[info] Available formats' in line or re.match(r'^\s*ID\s+', line):
+                in_table = True
+                continue
+            if in_table and line.strip() and not line.startswith('-'):
+                parts = re.split(r'\s{2,}', line.strip())
+                if len(parts) >= 3:
+                    fid = parts[0].strip()
+                    ext = parts[1].strip() if len(parts) > 1 else ''
+                    info = ' '.join(parts[2:]).strip() if len(parts) > 2 else ''
+                    res_match = re.search(r'(\d{3,4}p|\d+x\d+)', info)
+                    size_match = re.search(r'~?([\d.]+)(MiB|GiB|KiB)', info)
+                    resolution = res_match.group(1) if res_match else ''
+                    size = f"{size_match.group(1)}{size_match.group(2)}" if size_match else ''
+                    audio_match = re.search(r'audio\s*only|audio\s*\d+k', info, re.IGNORECASE)
+                    is_audio = bool(audio_match)
+                    if fid and ext:
+                        formats.append({
+                            'id': fid,
+                            'ext': ext,
+                            'info': info[:60],
+                            'resolution': resolution,
+                            'size': size,
+                            'is_audio': is_audio,
+                        })
+                    if len(formats) >= 15:
+                        break
+        return formats
+    except Exception as e:
+        logger.warning(f"get_formats error: {e}")
+        return None
+
+async def download_media(url, user_id=None, format_id=None):
     if not url.startswith(("http://", "https://")):
         return None
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _download, url, user_id)
+        result = await loop.run_in_executor(None, _download, url, user_id, format_id)
         return result
     except Exception as e:
         logger.error(f"Download failed for {url}: {e}")
         return None
 
-def _download(url, user_id=None):
+def _download(url, user_id=None, format_id=None):
     cookies = get_cookies_path(user_id) if user_id else None
     out_tmpl = str(DOWNLOAD_DIR / "%(title)s_%(id)s.%(ext)s")
-    lines = _run_ytdlp(url, out_tmpl, cookies)
+    lines = _run_ytdlp(url, out_tmpl, cookies, format_id)
     if not lines:
         logger.info("yt-dlp failed, trying gallery-dl fallback...")
         fallback_dir = DOWNLOAD_DIR / "gallery"

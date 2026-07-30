@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-from src.downloader import download_media, detect_platform, save_cookies, get_cookies_path
+from src.downloader import download_media, detect_platform, save_cookies, get_cookies_path, get_formats
 from src.separator import separate_audio
 
 load_dotenv()
@@ -279,7 +279,52 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
 
-    elif action in ("audio", "video", "file"):
+    elif action == "video":
+        user_id = query.from_user.id
+        await query.edit_message_text("🎬 جاري جلب الجودات المتاحة...")
+        formats = await get_formats(url, user_id)
+        if formats:
+            keyboard = []
+            row = []
+            for f in formats:
+                label = f"🎬 {f['resolution'] or f['id']} ({f['ext']})" if not f['is_audio'] else f"🎵 {f['ext']} ({f.get('resolution','audio')})"
+                cb = f"dload|{url}|{f['id']}"
+                if f['size']:
+                    label += f" {f['size']}"
+                row.append(InlineKeyboardButton(label, callback_data=cb))
+                if len(row) >= 2:
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+            keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"back|{url}")])
+            await query.edit_message_text(
+                "🎬 اختر الجودة:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await query.edit_message_text("📥 جاري تحميل الفيديو...")
+            info = await download_media(url, user_id)
+            if info:
+                await _send_file(query, info, "video")
+            else:
+                await query.edit_message_text("❌ فشل التحميل")
+
+    elif action.startswith("dload"):
+        _, url, fmt_id = query.data.split("|", 2)
+        user_id = query.from_user.id
+        await query.edit_message_text(f"📥 جاري التحميل بالجودة {fmt_id}...")
+        info = await download_media(url, user_id, fmt_id)
+        if info:
+            await _send_file(query, info, "video")
+        else:
+            await query.edit_message_text("❌ فشل التحميل بالجودة المختارة")
+
+    elif action == "back":
+        url = query.data.split("|", 1)[1]
+        await _show_file_options(query, url, context)
+
+    elif action in ("audio", "file"):
         await query.edit_message_text("📥 جاري التحميل...")
         ext = Path(file_path).suffix.lower()
         IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
@@ -290,12 +335,58 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_audio(f, caption=f"🎵 {info['title']}")
             elif ext in IMAGE_EXTS:
                 await query.message.reply_photo(f, caption=f"🖼️ {info['title']}")
-            elif ext in VIDEO_EXTS or action == "video":
+            elif ext in VIDEO_EXTS:
                 await query.message.reply_video(f, caption=f"🎬 {info['title']}")
             else:
                 await query.message.reply_document(f, caption=f"📁 {info['title']}")
         await query.delete_message()
         Path(file_path).unlink(missing_ok=True)
+
+async def _send_file(query, info, action="file"):
+    file_path = info["file_path"]
+    ext = Path(file_path).suffix.lower()
+    IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
+    VIDEO_EXTS = {'.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'}
+    AUDIO_EXTS = {'.mp3', '.m4a', '.wav', '.flac', '.ogg', '.aac', '.opus'}
+    with open(file_path, 'rb') as f:
+        if ext in AUDIO_EXTS:
+            await query.message.reply_audio(f, caption=f"🎵 {info['title']}")
+        elif ext in IMAGE_EXTS:
+            await query.message.reply_photo(f, caption=f"🖼️ {info['title']}")
+        elif ext in VIDEO_EXTS:
+            await query.message.reply_video(f, caption=f"🎬 {info['title']}")
+        else:
+            await query.message.reply_document(f, caption=f"📁 {info['title']}")
+    await query.delete_message()
+    Path(file_path).unlink(missing_ok=True)
+
+async def _show_file_options(query, url, context):
+    downloads = context.user_data.get('downloads', {})
+    info = downloads.get(url)
+    if not info:
+        await query.edit_message_text("❌ انتهت صلاحية الجلسة")
+        return
+    ext = Path(info["file_path"]).suffix.lower()
+    VIDEO_EXTS = {'.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'}
+    AUDIO_EXTS = {'.mp3', '.m4a', '.wav', '.flac', '.ogg', '.aac', '.opus'}
+    keyboard = []
+    if ext in AUDIO_EXTS:
+        keyboard = [
+            [InlineKeyboardButton("🎤 فصل الصوت", callback_data=f"separate|{url}")],
+            [InlineKeyboardButton("📥 تحميل الملف", callback_data=f"file|{url}")],
+        ]
+    elif ext in VIDEO_EXTS:
+        keyboard = [
+            [InlineKeyboardButton("🎵 تحميل الصوت", callback_data=f"audio|{url}")],
+            [InlineKeyboardButton("🎬 تحميل الفيديو", callback_data=f"video|{url}")],
+        ]
+    else:
+        keyboard = [[InlineKeyboardButton("📥 تحميل الملف", callback_data=f"file|{url}")]]
+    keyboard.append([InlineKeyboardButton("ℹ️ معلومات", callback_data=f"info|{url}")])
+    await query.edit_message_text(
+        f"اختر ما تريد:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
