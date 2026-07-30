@@ -1,9 +1,10 @@
 import os
 import re
+import json
 import asyncio
 import subprocess
+import tempfile
 import logging
-import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -26,20 +27,40 @@ PLATFORMS = [
     (r'twitch\.tv', 'Twitch'),
     (r'linkedin\.com', 'LinkedIn'),
     (r'mediafire\.com|mega\.nz|drive\.google|dropbox\.com', 'Cloud Storage'),
+    (r'telegram\.org|t\.me', 'Telegram'),
+    (r'whatsapp\.com', 'WhatsApp'),
 ]
 
 def detect_platform(url):
     for pattern, name in PLATFORMS:
         if re.search(pattern, url, re.IGNORECASE):
             return name
-    if re.search(r'\.(mp3|mp4|wav|flac|ogg|avi|mkv|mov|pdf|zip|rar|jpg|jpeg|png|gif)$', url, re.IGNORECASE):
-        return 'Direct Link'
+    ext_match = re.search(r'\.(mp3|mp4|wav|flac|ogg|avi|mkv|mov|pdf|zip|rar|jpg|jpeg|png|gif|webp|webm|m4a|aac|opus)$', url, re.IGNORECASE)
+    if ext_match:
+        return f'File ({ext_match.group(1)})'
     return 'Website'
 
 def sanitize_filename(name):
     name = re.sub(r'[<>:"/\\|?*]', '_', name)
     name = re.sub(r'[\x00-\x1f]', '', name)
+    name = re.sub(r'\s+', ' ', name)
     return name.strip()[:100]
+
+def _get_extractor_args():
+    """Get YouTube extractor args that help avoid bot detection"""
+    return "youtube:player_client=android,youtube_web;youtube:skip=webpage"
+
+def _run_ytdlp(args, timeout=300):
+    """Run yt-dlp with the given args"""
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return result
+    except subprocess.TimeoutExpired:
+        logger.error(f"yt-dlp timeout for {' '.join(args[:3])}")
+        return None
+    except Exception as e:
+        logger.error(f"yt-dlp error: {e}")
+        return None
 
 async def download_media(url):
     if not url.startswith(("http://", "https://")):
@@ -53,83 +74,52 @@ async def download_media(url):
         return None
 
 def _download(url):
-    output = str(DOWNLOAD_DIR / "%(title)s.%(ext)s")
-
-    # Try audio first
-    cmd = [
-        "yt-dlp", url,
-        "-o", output,
+    out_tmpl = str(DOWNLOAD_DIR / "%(title)s_%(id)s.%(ext)s")
+    base_args = [
+        "yt-dlp", url, "-o", out_tmpl,
         "--no-playlist",
-        "--print", "after_move:filename",
-        "--print", "title",
-        "--print", "duration_string",
-        "--print", "filesize_approx",
         "--no-warnings",
         "--no-check-certificate",
         "--geo-bypass",
-        "--extractor-args", "youtube:player_client=android",
-        "-x", "--audio-format", "mp3",
-        "--audio-quality", "0",
+        "--extractor-args", _get_extractor_args(),
         "--max-filesize", "500M",
+        "--print", "after_move:filepath",
+        "--print", "title",
+        "--print", "duration_string",
+        "--print", "filesize_approx",
+        "--restrict-filenames",
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    strategies = [
+        [*base_args, "-x", "--audio-format", "mp3", "--audio-quality", "0"],
+        [*base_args, "-f", "best[height<=1080]"],
+        [*base_args, "-f", "best"],
+        [*base_args],
+    ]
 
-    if result.returncode != 0:
-        # Try video
-        cmd = [
-            "yt-dlp", url,
-            "-o", output,
-            "--no-playlist",
-            "--print", "after_move:filename",
-            "--print", "title",
-            "--print", "duration_string",
-            "--print", "filesize_approx",
-            "--no-warnings",
-            "--no-check-certificate",
-            "--geo-bypass",
-            "--extractor-args", "youtube:player_client=android",
-            "-f", "best[height<=1080]",
-            "--max-filesize", "500M",
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    for args in strategies:
+        logger.info(f"Trying yt-dlp with: {' '.join(args[2:8])}")
+        result = _run_ytdlp(args)
+        if result and result.returncode == 0:
+            lines = [l.strip() for l in result.stdout.split('\n') if l.strip()]
+            if lines:
+                file_path = lines[0]
+                if Path(file_path).exists():
+                    title = sanitize_filename(lines[1]) if len(lines) > 1 else Path(file_path).stem
+                    duration = lines[2] if len(lines) > 2 else "?"
+                    size_str = lines[3] if len(lines) > 3 else "0"
+                    try:
+                        size = float(size_str) if re.match(r'^[\d.]+$', size_str) else Path(file_path).stat().st_size / (1024*1024)
+                    except:
+                        size = Path(file_path).stat().st_size / (1024*1024)
+                    return {
+                        "file_path": file_path,
+                        "title": title,
+                        "duration": duration,
+                        "size": size,
+                    }
 
-    if result.returncode != 0:
-        # Final fallback
-        cmd = [
-            "yt-dlp", url,
-            "-o", output,
-            "--no-playlist",
-            "--print", "after_move:filename",
-            "--no-warnings",
-            "--no-check-certificate",
-            "--geo-bypass",
-            "--max-filesize", "500M",
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-
-    if result.returncode != 0:
-        stderr = result.stderr[:500]
-        logger.error(f"yt-dlp error: {stderr}")
-        return None
-
-    lines = [l.strip() for l in result.stdout.split('\n') if l.strip()]
-    if not lines:
-        logger.error(f"No output from yt-dlp")
-        return None
-
-    file_path = lines[0]
-    if not Path(file_path).exists():
-        logger.error(f"File not found: {file_path}")
-        return None
-
-    title = lines[1] if len(lines) > 1 else Path(file_path).stem
-    duration = lines[2] if len(lines) > 2 else "?"
-    size = float(lines[3]) if len(lines) > 3 and re.match(r'^[\d.]+$', lines[3]) else Path(file_path).stat().st_size / (1024*1024)
-
-    return {
-        "file_path": file_path,
-        "title": sanitize_filename(title),
-        "duration": duration,
-        "size": size,
-    }
+    stderr = result.stderr[:500] if result and hasattr(result, 'stderr') else "Unknown error"
+    if result:
+        logger.error(f"yt-dlp failed: {stderr}")
+    return None
