@@ -1,10 +1,9 @@
 import os
 import re
-import json
 import asyncio
 import subprocess
-import tempfile
 import logging
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -63,21 +62,63 @@ def sanitize_filename(name):
     name = re.sub(r'\s+', ' ', name)
     return name.strip()[:100]
 
-def _get_extractor_args():
-    """Get YouTube extractor args that help avoid bot detection"""
-    return "youtube:player_client=android,youtube_web;youtube:skip=webpage"
+def _run_ytdlp(url, out_tmpl):
+    args = [
+        "yt-dlp", url, "-o", out_tmpl,
+        "--no-playlist", "--no-warnings",
+        "--no-check-certificate", "--geo-bypass",
+        "--extractor-args", "youtube:player_client=android,youtube_web;youtube:skip=webpage",
+        "--max-filesize", "500M",
+        "--print", "after_move:filepath", "--print", "title",
+        "--print", "duration_string", "--print", "filesize_approx",
+        "--restrict-filenames",
+    ]
+    strategies = [
+        [*args, "-x", "--audio-format", "mp3", "--audio-quality", "0"],
+        [*args, "-f", "best[height<=1080]"],
+        [*args, "-f", "best"],
+        args,
+    ]
+    for strategy in strategies:
+        logger.info(f"yt-dlp trying: {' '.join(strategy[2:8])}")
+        try:
+            result = subprocess.run(strategy, capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                lines = [l.strip() for l in result.stdout.split('\n') if l.strip()]
+                if lines and Path(lines[0]).exists():
+                    return lines
+        except subprocess.TimeoutExpired:
+            logger.warning("yt-dlp timeout")
+            continue
+        except Exception as e:
+            logger.warning(f"yt-dlp error: {e}")
+            continue
+    return None
 
-def _run_ytdlp(args, timeout=300):
-    """Run yt-dlp with the given args"""
+def _run_gallerydl(url, out_dir):
+    """Use gallery-dl for better Snapchat support"""
+    out_tmpl = str(out_dir / "{id}.{extension}")
+    args = [
+        "gallery-dl", url,
+        "-d", str(out_dir),
+        "-o", f"filename={out_tmpl}",
+        "--no-cookies",
+    ]
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-        return result
-    except subprocess.TimeoutExpired:
-        logger.error(f"yt-dlp timeout for {' '.join(args[:3])}")
-        return None
+        result = subprocess.run(args, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            files = list(out_dir.iterdir())
+            if files:
+                latest = max(files, key=lambda f: f.stat().st_mtime)
+                title = latest.stem
+                return [str(latest), title, "?", str(latest.stat().st_size / (1024*1024))]
+            stderr = result.stderr[:500]
+            logger.info(f"gallery-dl stderr: {stderr}")
+        else:
+            logger.warning(f"gallery-dl failed: {result.stderr[:300]}")
     except Exception as e:
-        logger.error(f"yt-dlp error: {e}")
-        return None
+        logger.warning(f"gallery-dl error: {e}")
+    return None
 
 async def download_media(url):
     if not url.startswith(("http://", "https://")):
@@ -92,54 +133,36 @@ async def download_media(url):
 
 def _download(url):
     out_tmpl = str(DOWNLOAD_DIR / "%(title)s_%(id)s.%(ext)s")
-    base_args = [
-        "yt-dlp", url, "-o", out_tmpl,
-        "--no-playlist",
-        "--no-warnings",
-        "--no-check-certificate",
-        "--geo-bypass",
-        "--extractor-args", _get_extractor_args(),
-        "--max-filesize", "500M",
-        "--print", "after_move:filepath",
-        "--print", "title",
-        "--print", "duration_string",
-        "--print", "filesize_approx",
-        "--restrict-filenames",
-    ]
-
-    strategies = [
-        [*base_args, "-x", "--audio-format", "mp3", "--audio-quality", "0"],
-        [*base_args, "-f", "best[height<=1080]"],
-        [*base_args, "-f", "best"],
-        [*base_args],
-    ]
-
-    for args in strategies:
-        logger.info(f"Trying yt-dlp with: {' '.join(args[2:8])}")
-        result = _run_ytdlp(args)
-        if result and result.returncode == 0:
-            lines = [l.strip() for l in result.stdout.split('\n') if l.strip()]
-            if lines:
-                file_path = lines[0]
-                if Path(file_path).exists():
-                    title = sanitize_filename(lines[1]) if len(lines) > 1 else Path(file_path).stem
-                    duration = lines[2] if len(lines) > 2 else "?"
-                    size_str = lines[3] if len(lines) > 3 else "0"
-                    try:
-                        size = float(size_str) if re.match(r'^[\d.]+$', size_str) else Path(file_path).stat().st_size / (1024*1024)
-                    except:
-                        size = Path(file_path).stat().st_size / (1024*1024)
-                    return {
-                        "file_path": file_path,
-                        "title": title,
-                        "duration": duration,
-                        "size": size,
-                    }
-
-    stderr = result.stderr[:500] if result and hasattr(result, 'stderr') else "Unknown error"
-    if result:
-        logger.error(f"yt-dlp failed: {stderr}")
-    # Better error for Snapchat non-spotlight
-    if 'snapchat' in url and 'spotlight' not in url:
-        logger.warning("Snapchat non-spotlight URLs need authentication - try a Spotlight link instead")
-    return None
+    lines = _run_ytdlp(url, out_tmpl)
+    if not lines:
+        if 'snapchat' in url.lower():
+            logger.info("yt-dlp failed, trying gallery-dl for Snapchat...")
+            snap_dir = DOWNLOAD_DIR / "snapchat"
+            snap_dir.mkdir(exist_ok=True)
+            lines = _run_gallerydl(url, snap_dir)
+    if not lines:
+        stderr = "(no output)"
+        logger.error(f"All download methods failed for {url}")
+        if 'snapchat' in url and 'spotlight' not in url:
+            logger.warning("Snapchat non-spotlight URLs may need authentication")
+        return None
+    file_path = lines[0]
+    if not Path(file_path).exists():
+        logger.error(f"File not found: {file_path}")
+        return None
+    title = sanitize_filename(lines[1]) if len(lines) > 1 else Path(file_path).stem
+    duration = lines[2] if len(lines) > 2 else "?"
+    size_str = lines[3] if len(lines) > 3 else "0"
+    try:
+        if re.match(r'^[\d.]+$', size_str):
+            size = float(size_str)
+        else:
+            size = Path(file_path).stat().st_size / (1024*1024)
+    except:
+        size = Path(file_path).stat().st_size / (1024*1024)
+    return {
+        "file_path": file_path,
+        "title": title,
+        "duration": duration,
+        "size": size,
+    }
