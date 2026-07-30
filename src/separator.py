@@ -11,13 +11,39 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 def get_ffmpeg_location():
     """Return dir containing ffmpeg for yt-dlp --ffmpeg-location"""
+    _ensure_ffmpeg()
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg:
         return os.path.dirname(ffmpeg)
     return ""
 
 def get_ffmpeg_path():
+    _ensure_ffmpeg()
     return shutil.which("ffmpeg") or "ffmpeg"
+
+def _ensure_ffmpeg():
+    if shutil.which("ffmpeg"):
+        return
+    # Install via apt on Linux (Railway)
+    if os.sys.platform == "linux":
+        try:
+            subprocess.run(["apt-get", "update", "-qq"], capture_output=True, timeout=60)
+            subprocess.run(["apt-get", "install", "-y", "-qq", "ffmpeg"], capture_output=True, timeout=120)
+            if shutil.which("ffmpeg"):
+                logger.info("Installed ffmpeg via apt")
+                return
+        except Exception as e:
+            logger.warning(f"apt install ffmpeg failed: {e}")
+    # Try static_ffmpeg
+    try:
+        import static_ffmpeg
+        static_ffmpeg.add_paths()
+        if shutil.which("ffmpeg"):
+            logger.info("Added ffmpeg via static_ffmpeg")
+            return
+    except ImportError:
+        pass
+    logger.warning("FFmpeg not available")
 
 async def separate_audio(file_path):
     try:
