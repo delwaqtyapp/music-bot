@@ -69,50 +69,54 @@ def _separate(file_path):
     if not Path(file_path).exists():
         logger.error(f"File not found: {file_path}")
         return None
+
     stem = Path(file_path).stem
     out_base = str(OUTPUT_DIR / stem)
     vocals_path = f"{out_base}_vocals.mp3"
     music_path  = f"{out_base}_music.mp3"
 
-    # Step 1: Extract vocals using center channel + bandpass + noise gate
+    # Strategy 1: Center channel (L+R)/2 + bandpass → vocals
+    # This works on ALL FFmpeg versions (no afftdn)
+    # pan=mono|c0=0.5*FL+0.5*FR extracts the center-panned audio
     r1 = subprocess.run([
         ffmpeg, "-i", file_path,
-        "-af", "pan=mono|c0=FC,lowpass=f=8000,highpass=f=80,afftdn=nr=12:nf=-25,volume=2.0",
+        "-af", "pan=mono|c0=0.5*FL+0.5*FR,lowpass=f=8000,highpass=f=80,volume=2.0",
         "-b:a", "192k", "-y", vocals_path
     ], capture_output=True, timeout=120)
+    v_ok = r1.returncode == 0 and Path(vocals_path).exists() and Path(vocals_path).stat().st_size > 2048
 
-    if r1.returncode == 0 and Path(vocals_path).exists():
-        # Step 2: Generate music by subtracting vocals from original (invert phase and mix)
+    if v_ok:
+        # Generate music: original - vocals (phase inversion)
         r2 = subprocess.run([
             ffmpeg, "-i", file_path, "-i", vocals_path,
-            "-filter_complex", "[1:a]volume=-1[a_inv];[0:a][a_inv]amix=inputs=2:duration=first[music]",
-            "-map", "[music]", "-b:a", "192k", "-y", music_path
+            "-filter_complex",
+            "[0:a]aformat=sample_rates=44100:channel_layouts=stereo[orig];"
+            "[1:a]aformat=sample_rates=44100:channel_layouts=mono,volume=-1[voc_inv];"
+            "[orig][voc_inv]amix=inputs=2:duration=first:dropout_transition=2[music]",
+            "-map", "[music]", "-ac", "2", "-b:a", "192k", "-y", music_path
         ], capture_output=True, timeout=120)
+        m_ok = r2.returncode == 0 and Path(music_path).exists() and Path(music_path).stat().st_size > 2048
+        if m_ok:
+            logger.info("Separation OK: center+phase-invert")
+            return {"vocals": vocals_path, "music": music_path}
 
-    # Fallback: pan filter
-    if not Path(vocals_path).exists() or not Path(music_path).exists():
-        r1b = subprocess.run([
+    # Fallback 2: simple band-split for both
+    if not v_ok:
+        subprocess.run([
             ffmpeg, "-i", file_path,
-            "-af", "pan=mono|c0=FC", "-b:a", "192k", "-y", vocals_path
+            "-af", "pan=mono|c0=0.5*FL+0.5*FR,volume=2.0",
+            "-b:a", "192k", "-y", vocals_path
         ], capture_output=True, timeout=120)
-        r2b = subprocess.run([
+    if not Path(music_path).exists() or Path(music_path).stat().st_size <= 2048:
+        subprocess.run([
             ffmpeg, "-i", file_path,
-            "-af", "pan=stereo|FL=FL+0.5*FC|FR=FR+0.5*FC",
+            "-af", "highpass=f=200,lowpass=f=8000,volume=0.7",
             "-b:a", "192k", "-y", music_path
         ], capture_output=True, timeout=120)
-
-    if Path(vocals_path).exists() and Path(music_path).exists():
+    if Path(vocals_path).exists() and Path(vocals_path).stat().st_size > 2048 and \
+       Path(music_path).exists() and Path(music_path).stat().st_size > 2048:
         return {"vocals": vocals_path, "music": music_path}
 
-    # Final fallback: highpass/lowpass
-    vocals_final = f"{out_base}_vocals_final.mp3"
-    music_final  = f"{out_base}_music_final.mp3"
-    subprocess.run([ffmpeg, "-i", file_path, "-af", "lowpass=f=4000,highpass=f=80",
-                    "-b:a", "192k", "-y", vocals_final], capture_output=True, timeout=120)
-    subprocess.run([ffmpeg, "-i", file_path, "-af", "highpass=f=400,lowpass=f=200",
-                    "-b:a", "192k", "-y", music_final], capture_output=True, timeout=120)
-    if Path(vocals_final).exists() and Path(music_final).exists():
-        return {"vocals": vocals_final, "music": music_final}
     return None
 
 def _separate_video(file_path):
@@ -124,10 +128,27 @@ def _separate_video(file_path):
     output_path = str(OUTPUT_DIR / f"{stem}_vocals_only.mp4")
     r = subprocess.run([
         ffmpeg, "-i", file_path, "-i", sep["vocals"],
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k",
         "-map", "0:v:0", "-map", "1:a:0",
-        "-shortest", "-y", output_path
-    ], capture_output=True, timeout=120)
-    if r.returncode == 0 and Path(output_path).exists():
+        "-af", "aresample=async=1",
+        "-shortest", "-movflags", "+faststart",
+        "-y", output_path
+    ], capture_output=True, timeout=180)
+    if r.returncode == 0 and Path(output_path).exists() and Path(output_path).stat().st_size > 4096:
         return output_path
+    # Try fallback: re-encode video too (some codecs don't copy well)
+    out2 = str(OUTPUT_DIR / f"{stem}_vocals_only_fb.mp4")
+    r2 = subprocess.run([
+        ffmpeg, "-i", file_path, "-i", sep["vocals"],
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "192k",
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-af", "aresample=async=1",
+        "-shortest", "-movflags", "+faststart",
+        "-y", out2
+    ], capture_output=True, timeout=300)
+    if r2.returncode == 0 and Path(out2).exists() and Path(out2).stat().st_size > 4096:
+        return out2
+    logger.error(f"Video remux failed:\n  {r.stderr.decode(errors='ignore')[-500:]}")
     return None
