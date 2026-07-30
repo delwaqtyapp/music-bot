@@ -45,6 +45,15 @@ async def separate_audio(file_path):
         logger.error(f"Separation failed: {e}")
         return None
 
+async def separate_video(file_path):
+    """Separate audio from video and return video with vocals-only"""
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _separate_video, file_path)
+    except Exception as e:
+        logger.error(f"Video separation failed: {e}")
+        return None
+
 def _separate(file_path):
     ffmpeg = _get_ffmpeg()
     if not ffmpeg:
@@ -85,4 +94,24 @@ def _separate(file_path):
     ], capture_output=True, timeout=120)
     if r3.returncode == 0 and r4.returncode == 0 and Path(vocals_path2).exists() and Path(music_path2).exists():
         return {"vocals": vocals_path2, "music": music_path2}
+    return None
+
+def _separate_video(file_path):
+    """Extract audio, separate vocals, replace video audio with vocals"""
+    ffmpeg = _get_ffmpeg()
+    if not ffmpeg:
+        return None
+    sep = _separate(file_path)
+    if not sep:
+        return None
+    stem = Path(file_path).stem
+    output_path = str(OUTPUT_DIR / f"{stem}_vocals_only.mp4")
+    r = subprocess.run([
+        ffmpeg, "-i", file_path, "-i", sep["vocals"],
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-shortest", "-y", output_path
+    ], capture_output=True, timeout=120)
+    if r.returncode == 0 and Path(output_path).exists():
+        return output_path
     return None
